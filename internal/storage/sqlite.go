@@ -5,16 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/google/uuid"
-	"github.com/lich0821/ccNexus/internal/config"
 	_ "modernc.org/sqlite"
 )
-
-// escapeSQLString escapes single quotes in SQL string literals to prevent injection
-func escapeSQLString(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
-}
 
 // safeConfigKeys 定义可以安全跨设备和跨平台备份/恢复的 app_config 配置项。
 // 这些配置是平台无关的，不包含设备特定或路径相关的值。
@@ -51,21 +45,9 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 		return nil, err
 	}
 
-	// Enable WAL mode for better concurrency performance
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
-	}
-
-	// Set synchronous mode to NORMAL for better performance (still safe with WAL)
-	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to set synchronous mode: %w", err)
-	}
-
-	// Set busy_timeout - wait up to 5 seconds when database is locked
-	// This helps avoid SQLITE_BUSY errors during concurrent writes
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+	// 设置 busy_timeout，当数据库被锁定时等待最多 5 秒
+	// 这可以避免并发写入时的 SQLITE_BUSY 错误
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to set busy_timeout: %w", err)
 	}
@@ -89,54 +71,12 @@ func (s *SQLiteStorage) initSchema() error {
 		name TEXT UNIQUE NOT NULL,
 		api_url TEXT NOT NULL,
 		api_key TEXT NOT NULL,
-		auth_mode TEXT NOT NULL DEFAULT 'api_key',
 		enabled BOOLEAN DEFAULT TRUE,
 		transformer TEXT DEFAULT 'claude',
 		model TEXT,
 		remark TEXT,
 		sort_order INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS endpoint_credentials (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		endpoint_name TEXT NOT NULL,
-		provider_type TEXT NOT NULL DEFAULT 'codex',
-		account_id TEXT,
-		email TEXT,
-		access_token TEXT NOT NULL,
-		refresh_token TEXT,
-		id_token TEXT,
-		last_refresh DATETIME,
-		expires_at DATETIME,
-		status TEXT NOT NULL DEFAULT 'active',
-		enabled BOOLEAN DEFAULT TRUE,
-		failure_count INTEGER DEFAULT 0,
-		cooldown_until DATETIME,
-		last_checked_at DATETIME,
-		last_used_at DATETIME,
-		last_error TEXT,
-		remark TEXT,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS credential_rate_limits (
-		credential_id INTEGER PRIMARY KEY,
-		snapshot_json TEXT,
-		last_status TEXT,
-		last_error TEXT,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS credential_usage (
-		credential_id INTEGER PRIMARY KEY,
-		endpoint_name TEXT NOT NULL,
-		requests INTEGER DEFAULT 0,
-		errors INTEGER DEFAULT 0,
-		input_tokens INTEGER DEFAULT 0,
-		output_tokens INTEGER DEFAULT 0,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -162,11 +102,6 @@ func (s *SQLiteStorage) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
 	CREATE INDEX IF NOT EXISTS idx_daily_stats_endpoint ON daily_stats(endpoint_name);
 	CREATE INDEX IF NOT EXISTS idx_daily_stats_device ON daily_stats(device_id);
-	CREATE INDEX IF NOT EXISTS idx_endpoint_credentials_endpoint ON endpoint_credentials(endpoint_name);
-	CREATE INDEX IF NOT EXISTS idx_endpoint_credentials_status ON endpoint_credentials(status);
-	CREATE INDEX IF NOT EXISTS idx_endpoint_credentials_expires_at ON endpoint_credentials(expires_at);
-	CREATE INDEX IF NOT EXISTS idx_credential_rate_limits_updated ON credential_rate_limits(updated_at);
-	CREATE INDEX IF NOT EXISTS idx_credential_usage_endpoint ON credential_usage(endpoint_name);
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {
@@ -175,9 +110,6 @@ func (s *SQLiteStorage) initSchema() error {
 
 	// Migration: Add sort_order column if it doesn't exist
 	if err := s.migrateSortOrder(); err != nil {
-		return err
-	}
-	if err := s.migrateAuthMode(); err != nil {
 		return err
 	}
 
@@ -209,28 +141,11 @@ func (s *SQLiteStorage) migrateSortOrder() error {
 	return nil
 }
 
-func (s *SQLiteStorage) migrateAuthMode() error {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('endpoints') WHERE name='auth_mode'`).Scan(&count)
-	if err != nil {
-		return err
-	}
-
-	if count == 0 {
-		if _, err := s.db.Exec(`ALTER TABLE endpoints ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'api_key'`); err != nil {
-			return err
-		}
-	}
-
-	_, err = s.db.Exec(`UPDATE endpoints SET auth_mode='api_key' WHERE auth_mode IS NULL OR auth_mode=''`)
-	return err
-}
-
 func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, remark, sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, enabled, transformer, model, remark, sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -239,10 +154,9 @@ func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
 	var endpoints []Endpoint
 	for rows.Next() {
 		var ep Endpoint
-		if err := rows.Scan(&ep.ID, &ep.Name, &ep.APIUrl, &ep.APIKey, &ep.AuthMode, &ep.Enabled, &ep.Transformer, &ep.Model, &ep.Remark, &ep.SortOrder, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
+		if err := rows.Scan(&ep.ID, &ep.Name, &ep.APIUrl, &ep.APIKey, &ep.Enabled, &ep.Transformer, &ep.Model, &ep.Remark, &ep.SortOrder, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 			return nil, err
 		}
-		normalizeEndpointAuthMode(&ep)
 		endpoints = append(endpoints, ep)
 	}
 
@@ -253,10 +167,8 @@ func (s *SQLiteStorage) SaveEndpoint(ep *Endpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	normalizeEndpointAuthMode(ep)
-
-	result, err := s.db.Exec(`INSERT INTO endpoints (name, api_url, api_key, auth_mode, enabled, transformer, model, remark, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder)
+	result, err := s.db.Exec(`INSERT INTO endpoints (name, api_url, api_key, enabled, transformer, model, remark, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		ep.Name, ep.APIUrl, ep.APIKey, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder)
 	if err != nil {
 		return err
 	}
@@ -273,28 +185,14 @@ func (s *SQLiteStorage) UpdateEndpoint(ep *Endpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	normalizeEndpointAuthMode(ep)
-
-	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
-		ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder, ep.Name)
+	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, enabled=?, transformer=?, model=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
+		ep.APIUrl, ep.APIKey, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder, ep.Name)
 	return err
 }
 
 func (s *SQLiteStorage) DeleteEndpoint(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if _, err := s.db.Exec(`
-		DELETE FROM credential_rate_limits
-		WHERE credential_id IN (
-			SELECT id FROM endpoint_credentials WHERE endpoint_name=?
-		)
-	`, name); err != nil {
-		return err
-	}
-	if _, err := s.db.Exec(`DELETE FROM endpoint_credentials WHERE endpoint_name=?`, name); err != nil {
-		return err
-	}
 
 	_, err := s.db.Exec(`DELETE FROM endpoints WHERE name=?`, name)
 	return err
@@ -452,43 +350,6 @@ func (s *SQLiteStorage) GetEndpointTotalStats(endpointName string) (*EndpointSta
 	}, nil
 }
 
-// GetPeriodStatsAggregated returns aggregated statistics for all endpoints in a time period using a single query
-func (s *SQLiteStorage) GetPeriodStatsAggregated(startDate, endDate string) (map[string]*EndpointStats, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	query := `SELECT endpoint_name, SUM(requests), SUM(errors), SUM(input_tokens), SUM(output_tokens)
-		FROM daily_stats
-		WHERE date >= ? AND date <= ?
-		GROUP BY endpoint_name`
-
-	rows, err := s.db.Query(query, startDate, endDate)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make(map[string]*EndpointStats)
-	for rows.Next() {
-		var endpointName string
-		var requests, errors int
-		var inputTokens, outputTokens int64
-
-		if err := rows.Scan(&endpointName, &requests, &errors, &inputTokens, &outputTokens); err != nil {
-			return nil, err
-		}
-
-		result[endpointName] = &EndpointStats{
-			Requests:     requests,
-			Errors:       errors,
-			InputTokens:  inputTokens,
-			OutputTokens: outputTokens,
-		}
-	}
-
-	return result, rows.Err()
-}
-
 // GetOrCreateDeviceID returns the device ID, creating one if it doesn't exist
 func (s *SQLiteStorage) GetOrCreateDeviceID() (string, error) {
 	s.mu.Lock()
@@ -515,8 +376,9 @@ func (s *SQLiteStorage) GetOrCreateDeviceID() (string, error) {
 }
 
 func generateDeviceID() string {
-	// Use UUID v4 for guaranteed uniqueness
-	return "device-" + uuid.New().String()
+	// Use timestamp + random string for uniqueness
+	timestamp := time.Now().UnixNano()
+	return fmt.Sprintf("device-%x", timestamp)[:16]
 }
 
 func GenerateDeviceID() string {
@@ -612,8 +474,8 @@ func (s *SQLiteStorage) CreateBackupCopy(backupPath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 使用 VACUUM INTO 创建数据库副本，转义路径中的单引号
-	_, err := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", escapeSQLString(backupPath)))
+	// 使用 VACUUM INTO 创建数据库副本
+	_, err := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupPath))
 	if err != nil {
 		return fmt.Errorf("failed to create backup: %w", err)
 	}
@@ -655,8 +517,8 @@ func (s *SQLiteStorage) DetectEndpointConflicts(remoteDBPath string) ([]MergeCon
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Attach remote database, escape path to prevent SQL injection
-	_, err := s.db.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS remote", escapeSQLString(remoteDBPath)))
+	// Attach remote database
+	_, err := s.db.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS remote", remoteDBPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to attach remote database: %w", err)
 	}
@@ -702,19 +564,7 @@ func (s *SQLiteStorage) DetectEndpointConflicts(remoteDBPath string) ([]MergeCon
 
 // getEndpointsFromDB gets endpoints from a specific database (main or attached)
 func (s *SQLiteStorage) getEndpointsFromDB(db *sql.DB, dbName string) ([]Endpoint, error) {
-	var authModeColumnCount int
-	columnCheck := fmt.Sprintf(`SELECT COUNT(*) FROM %s.pragma_table_info('endpoints') WHERE name='auth_mode'`, dbName)
-	if err := db.QueryRow(columnCheck).Scan(&authModeColumnCount); err != nil {
-		return nil, err
-	}
-
-	query := ""
-	if authModeColumnCount > 0 {
-		query = fmt.Sprintf(`SELECT id, name, api_url, api_key, COALESCE(auth_mode, 'api_key') as auth_mode, enabled, transformer, model, remark, COALESCE(sort_order, 0) as sort_order, created_at, updated_at FROM %s.endpoints`, dbName)
-	} else {
-		query = fmt.Sprintf(`SELECT id, name, api_url, api_key, 'api_key' as auth_mode, enabled, transformer, model, remark, COALESCE(sort_order, 0) as sort_order, created_at, updated_at FROM %s.endpoints`, dbName)
-	}
-
+	query := fmt.Sprintf(`SELECT id, name, api_url, api_key, enabled, transformer, model, remark, COALESCE(sort_order, 0) as sort_order, created_at, updated_at FROM %s.endpoints`, dbName)
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -724,40 +574,13 @@ func (s *SQLiteStorage) getEndpointsFromDB(db *sql.DB, dbName string) ([]Endpoin
 	var endpoints []Endpoint
 	for rows.Next() {
 		var ep Endpoint
-		if err := rows.Scan(&ep.ID, &ep.Name, &ep.APIUrl, &ep.APIKey, &ep.AuthMode, &ep.Enabled, &ep.Transformer, &ep.Model, &ep.Remark, &ep.SortOrder, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
+		if err := rows.Scan(&ep.ID, &ep.Name, &ep.APIUrl, &ep.APIKey, &ep.Enabled, &ep.Transformer, &ep.Model, &ep.Remark, &ep.SortOrder, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 			return nil, err
 		}
-		normalizeEndpointAuthMode(&ep)
 		endpoints = append(endpoints, ep)
 	}
 
 	return endpoints, rows.Err()
-}
-
-func normalizeEndpointAuthMode(ep *Endpoint) {
-	if ep == nil {
-		return
-	}
-	normalized := config.Endpoint{
-		Name:        ep.Name,
-		APIUrl:      ep.APIUrl,
-		APIKey:      ep.APIKey,
-		AuthMode:    ep.AuthMode,
-		Enabled:     ep.Enabled,
-		Transformer: ep.Transformer,
-		Model:       ep.Model,
-		Remark:      ep.Remark,
-	}
-	if normalized.Transformer == "" {
-		normalized.Transformer = "claude"
-	}
-	config.ApplyEndpointAuthModeRules(&normalized)
-	ep.APIUrl = normalized.APIUrl
-	ep.APIKey = normalized.APIKey
-	ep.AuthMode = normalized.AuthMode
-	ep.Transformer = normalized.Transformer
-	ep.Model = normalized.Model
-	ep.Remark = normalized.Remark
 }
 
 // compareEndpoints compares two endpoints and returns conflicting fields
@@ -769,9 +592,6 @@ func compareEndpoints(local, remote Endpoint) []string {
 	}
 	if local.APIKey != remote.APIKey {
 		conflicts = append(conflicts, "apiKey")
-	}
-	if config.NormalizeAuthMode(local.AuthMode) != config.NormalizeAuthMode(remote.AuthMode) {
-		conflicts = append(conflicts, "authMode")
 	}
 	if local.Enabled != remote.Enabled {
 		conflicts = append(conflicts, "enabled")
@@ -802,8 +622,8 @@ func (s *SQLiteStorage) MergeFromBackup(backupDBPath string, strategy MergeStrat
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 挂载备份数据库，转义路径防止 SQL 注入
-	_, err := s.db.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS backup", escapeSQLString(backupDBPath)))
+	// 挂载备份数据库
+	_, err := s.db.Exec(fmt.Sprintf("ATTACH DATABASE '%s' AS backup", backupDBPath))
 	if err != nil {
 		return fmt.Errorf("failed to attach backup database: %w", err)
 	}
@@ -841,34 +661,24 @@ func (s *SQLiteStorage) MergeFromBackup(backupDBPath string, strategy MergeStrat
 
 // mergeEndpoints 根据策略合并端点配置
 func (s *SQLiteStorage) mergeEndpoints(tx *sql.Tx, strategy MergeStrategy) error {
-	var backupHasAuthMode int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM backup.pragma_table_info('endpoints') WHERE name='auth_mode'`).Scan(&backupHasAuthMode); err != nil {
-		return err
-	}
-
-	selectAuthMode := "'api_key'"
-	if backupHasAuthMode > 0 {
-		selectAuthMode = "COALESCE(auth_mode, 'api_key')"
-	}
-
 	switch strategy {
 	case MergeStrategyKeepLocal:
 		// 只插入新端点（忽略冲突）
-		_, err := tx.Exec(fmt.Sprintf(`
+		_, err := tx.Exec(`
 			INSERT OR IGNORE INTO endpoints
-			(name, api_url, api_key, auth_mode, enabled, transformer, model, remark, sort_order)
-			SELECT name, api_url, api_key, %s, enabled, transformer, model, remark, COALESCE(sort_order, 0)
+			(name, api_url, api_key, enabled, transformer, model, remark, sort_order)
+			SELECT name, api_url, api_key, enabled, transformer, model, remark, COALESCE(sort_order, 0)
 			FROM backup.endpoints
-		`, selectAuthMode))
+		`)
 		return err
 	case MergeStrategyOverwriteLocal:
 		// 替换已存在的端点
-		_, err := tx.Exec(fmt.Sprintf(`
+		_, err := tx.Exec(`
 			INSERT OR REPLACE INTO endpoints
-			(name, api_url, api_key, auth_mode, enabled, transformer, model, remark, sort_order)
-			SELECT name, api_url, api_key, %s, enabled, transformer, model, remark, COALESCE(sort_order, 0)
+			(name, api_url, api_key, enabled, transformer, model, remark, sort_order)
+			SELECT name, api_url, api_key, enabled, transformer, model, remark, COALESCE(sort_order, 0)
 			FROM backup.endpoints
-		`, selectAuthMode))
+		`)
 		return err
 	default:
 		return fmt.Errorf("unknown merge strategy: %s", strategy)

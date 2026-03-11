@@ -158,12 +158,11 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 				writeEvent(map[string]interface{}{"type": "response.content_part.done", "output_index": 0, "content_index": 0, "part": map[string]interface{}{"type": "output_text"}})
 				writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			}
-			totalTokens := ctx.InputTokens + ctx.OutputTokens
 			writeEvent(map[string]interface{}{
 				"type": "response.completed",
 				"response": map[string]interface{}{
 					"id": ctx.MessageID, "object": "response", "status": "completed",
-					"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": totalTokens},
+					"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": ctx.InputTokens + ctx.OutputTokens},
 				},
 			})
 			result.WriteString("data: [DONE]\n\n")
@@ -187,9 +186,6 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 	if err := json.Unmarshal([]byte(jsonData), &resp); err != nil {
 		return nil, nil
 	}
-
-	// Sync Gemini usage metadata to context
-	syncGeminiUsageMetadata(&resp, ctx)
 
 	if len(resp.Candidates) == 0 {
 		return nil, nil
@@ -251,15 +247,11 @@ func GeminiStreamToOpenAI2(event []byte, ctx *transformer.StreamContext) ([]byte
 			writeEvent(map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": map[string]interface{}{"type": "message", "role": "assistant", "status": "completed"}})
 			ctx.ContentBlockStarted = false
 		}
-		totalTokens := ctx.InputTokens + ctx.OutputTokens
-		if resp.UsageMetadata != nil && resp.UsageMetadata.TotalTokenCount > 0 {
-			totalTokens = resp.UsageMetadata.TotalTokenCount
-		}
 		writeEvent(map[string]interface{}{
 			"type": "response.completed",
 			"response": map[string]interface{}{
 				"id": ctx.MessageID, "object": "response", "status": "completed",
-				"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": totalTokens},
+				"usage": map[string]interface{}{"input_tokens": ctx.InputTokens, "output_tokens": ctx.OutputTokens, "total_tokens": ctx.InputTokens + ctx.OutputTokens},
 			},
 		})
 		result.WriteString("data: [DONE]\n\n")

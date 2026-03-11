@@ -3,101 +3,16 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"path"
 	"strconv"
-	"strings"
 	"strings"
 	"sync"
 )
-
-const (
-	AuthModeAPIKey         = "api_key"
-	AuthModeTokenPool      = "token_pool"
-	AuthModeCodexTokenPool = "codex_token_pool"
-
-	CodexTokenPoolAPIURL      = "https://chatgpt.com/backend-api/codex"
-	CodexTokenPoolTransformer = "openai2"
-)
-
-func NormalizeAuthMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case AuthModeTokenPool:
-		return AuthModeTokenPool
-	case AuthModeCodexTokenPool:
-		return AuthModeCodexTokenPool
-	default:
-		return AuthModeAPIKey
-	}
-}
-
-func IsTokenPoolAuthMode(mode string) bool {
-	normalized := NormalizeAuthMode(mode)
-	return normalized == AuthModeTokenPool || normalized == AuthModeCodexTokenPool
-}
-
-func ApplyEndpointAuthModeRules(ep *Endpoint) {
-	if ep == nil {
-		return
-	}
-
-	ep.AuthMode = NormalizeAuthMode(ep.AuthMode)
-	ep.APIUrl = strings.TrimSuffix(strings.TrimSpace(ep.APIUrl), "/")
-	ep.Transformer = strings.TrimSpace(ep.Transformer)
-
-	// Compatibility migration:
-	// legacy token_pool + openai2 + codex backend URL => codex_token_pool.
-	if ep.AuthMode == AuthModeTokenPool &&
-		strings.EqualFold(ep.Transformer, CodexTokenPoolTransformer) &&
-		isCodexBackendAPIURL(ep.APIUrl) {
-		ep.AuthMode = AuthModeCodexTokenPool
-	}
-
-	if ep.AuthMode == AuthModeCodexTokenPool {
-		ep.APIUrl = CodexTokenPoolAPIURL
-		ep.Transformer = CodexTokenPoolTransformer
-		if strings.TrimSpace(ep.Model) == "" {
-			ep.Model = "gpt-5-codex"
-		}
-		ep.APIKey = ""
-		return
-	}
-
-	if ep.AuthMode == AuthModeTokenPool {
-		ep.APIKey = ""
-	}
-}
-
-func isCodexBackendAPIURL(raw string) bool {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return false
-	}
-
-	normalized := trimmed
-	if !strings.HasPrefix(normalized, "http://") && !strings.HasPrefix(normalized, "https://") {
-		normalized = "https://" + normalized
-	}
-
-	parsed, err := url.Parse(normalized)
-	if err != nil || parsed == nil {
-		return strings.HasSuffix(strings.ToLower(strings.TrimSuffix(trimmed, "/")), "chatgpt.com/backend-api/codex")
-	}
-
-	host := strings.ToLower(strings.TrimSpace(parsed.Host))
-	cleanPath := path.Clean(strings.TrimSpace(parsed.Path))
-	if host != "chatgpt.com" {
-		return false
-	}
-	return strings.HasSuffix(cleanPath, "/backend-api/codex") || strings.HasSuffix(cleanPath, "/backend-api/codex/v1")
-}
 
 // Endpoint represents a single API endpoint configuration
 type Endpoint struct {
 	Name        string `json:"name"`
 	APIUrl      string `json:"apiUrl"`
 	APIKey      string `json:"apiKey"`
-	AuthMode    string `json:"authMode,omitempty"`
 	Enabled     bool   `json:"enabled"`
 	Transformer string `json:"transformer,omitempty"` // Transformer type: claude, openai, gemini, deepseek
 	Model       string `json:"model,omitempty"`       // Target model name for non-Claude APIs
@@ -150,7 +65,6 @@ type UpdateConfig struct {
 type TerminalConfig struct {
 	SelectedTerminal string   `json:"selectedTerminal"` // Selected terminal ID
 	ProjectDirs      []string `json:"projectDirs"`      // Project directories
-	ClaudeCommand    string   `json:"claudeCommand"`    // Custom launcher command, defaults to "claude"
 }
 
 // ProxyConfig represents HTTP proxy configuration
@@ -196,7 +110,6 @@ func DefaultConfig() *Config {
 				Name:        "Claude Official",
 				APIUrl:      "api.anthropic.com",
 				APIKey:      "your-api-key-here",
-				AuthMode:    AuthModeAPIKey,
 				Enabled:     true,
 				Transformer: "claude",
 			},
@@ -225,27 +138,22 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("no endpoints configured")
 	}
 
-	for i := range c.Endpoints {
-		if c.Endpoints[i].Transformer == "" {
-			c.Endpoints[i].Transformer = "claude"
-		}
-		ApplyEndpointAuthModeRules(&c.Endpoints[i])
-
-		if c.Endpoints[i].APIUrl == "" {
+	for i, ep := range c.Endpoints {
+		if ep.APIUrl == "" {
 			return fmt.Errorf("endpoint %d: apiUrl is required", i+1)
 		}
-		if c.Endpoints[i].AuthMode == AuthModeAPIKey && strings.TrimSpace(c.Endpoints[i].APIKey) == "" {
+		if ep.APIKey == "" {
 			return fmt.Errorf("endpoint %d: apiKey is required", i+1)
 		}
 
+		// Default to claude transformer if not specified
+		if ep.Transformer == "" {
+			c.Endpoints[i].Transformer = "claude"
+		}
+
 		// Non-Claude transformers require model field
-		if c.Endpoints[i].Transformer != "claude" && c.Endpoints[i].Model == "" {
-			return fmt.Errorf(
-				"endpoint %d (%s): model is required for transformer '%s'",
-				i+1,
-				c.Endpoints[i].Name,
-				c.Endpoints[i].Transformer,
-			)
+		if ep.Transformer != "claude" && ep.Model == "" {
+			return fmt.Errorf("endpoint %d (%s): model is required for transformer '%s'", i+1, ep.Name, ep.Transformer)
 		}
 	}
 
@@ -477,7 +385,6 @@ func (c *Config) GetTerminal() *TerminalConfig {
 		return &TerminalConfig{
 			SelectedTerminal: "cmd",
 			ProjectDirs:      []string{},
-			ClaudeCommand:    "",
 		}
 	}
 	return c.Terminal
@@ -502,20 +409,6 @@ func (c *Config) UpdateProxy(proxy *ProxyConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Proxy = proxy
-}
-
-// GetCodexProxy returns the Codex dedicated proxy configuration (thread-safe)
-func (c *Config) GetCodexProxy() *ProxyConfig {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.CodexProxy
-}
-
-// UpdateCodexProxy updates the Codex dedicated proxy configuration (thread-safe)
-func (c *Config) UpdateCodexProxy(proxy *ProxyConfig) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.CodexProxy = proxy
 }
 
 // GetClaudeNotification returns the Claude notification settings (thread-safe)
@@ -548,7 +441,6 @@ type StorageEndpoint struct {
 	Name        string
 	APIUrl      string
 	APIKey      string
-	AuthMode    string
 	Enabled     bool
 	Transformer string
 	Model       string
@@ -573,7 +465,6 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 			Name:        ep.Name,
 			APIUrl:      ep.APIUrl,
 			APIKey:      ep.APIKey,
-			AuthMode:    NormalizeAuthMode(ep.AuthMode),
 			Enabled:     ep.Enabled,
 			Transformer: ep.Transformer,
 			Model:       ep.Model,
@@ -582,7 +473,6 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 		if endpoint.Transformer == "" {
 			endpoint.Transformer = "claude"
 		}
-		ApplyEndpointAuthModeRules(&endpoint)
 		config.Endpoints = append(config.Endpoints, endpoint)
 	}
 
@@ -745,7 +635,6 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 	config.Terminal = &TerminalConfig{
 		SelectedTerminal: "cmd",
 		ProjectDirs:      []string{},
-		ClaudeCommand:    "",
 	}
 	if selectedTerminal, err := storage.GetConfig("terminal_selected"); err == nil && selectedTerminal != "" {
 		config.Terminal.SelectedTerminal = selectedTerminal
@@ -756,16 +645,10 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 			config.Terminal.ProjectDirs = dirs
 		}
 	}
-	if claudeCmd, err := storage.GetConfig("terminal_claudeCommand"); err == nil {
-		config.Terminal.ClaudeCommand = claudeCmd
-	}
 
 	// Load Proxy config
 	if proxyURL, err := storage.GetConfig("proxy_url"); err == nil && proxyURL != "" {
 		config.Proxy = &ProxyConfig{URL: proxyURL}
-	}
-	if codexProxyURL, err := storage.GetConfig("codex_proxy_url"); err == nil && codexProxyURL != "" {
-		config.CodexProxy = &ProxyConfig{URL: codexProxyURL}
 	}
 
 	// Load Claude notification config
@@ -802,31 +685,15 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	// Save/update endpoints
 	for i, ep := range c.Endpoints {
 		endpoint := &StorageEndpoint{
-			Name:      ep.Name,
-			SortOrder: i, // Use array index as sort order
-		}
-		normalizedEndpoint := Endpoint{
 			Name:        ep.Name,
 			APIUrl:      ep.APIUrl,
 			APIKey:      ep.APIKey,
-			AuthMode:    ep.AuthMode,
 			Enabled:     ep.Enabled,
 			Transformer: ep.Transformer,
 			Model:       ep.Model,
 			Remark:      ep.Remark,
+			SortOrder:   i, // Use array index as sort order
 		}
-		if normalizedEndpoint.Transformer == "" {
-			normalizedEndpoint.Transformer = "claude"
-		}
-		ApplyEndpointAuthModeRules(&normalizedEndpoint)
-		endpoint.APIUrl = normalizedEndpoint.APIUrl
-		endpoint.APIKey = normalizedEndpoint.APIKey
-		endpoint.AuthMode = normalizedEndpoint.AuthMode
-		endpoint.Enabled = normalizedEndpoint.Enabled
-		endpoint.Transformer = normalizedEndpoint.Transformer
-		endpoint.Model = normalizedEndpoint.Model
-		endpoint.Remark = normalizedEndpoint.Remark
-		endpoint.SortOrder = i
 
 		if existingNames[ep.Name] {
 			if err := storage.UpdateEndpoint(endpoint); err != nil {
@@ -862,119 +729,58 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 
 	// Save WebDAV config
 	if c.WebDAV != nil {
-		if err := storage.SetConfig("webdav_url", c.WebDAV.URL); err != nil {
-			return fmt.Errorf("failed to save webdav_url config: %w", err)
-		}
-		if err := storage.SetConfig("webdav_username", c.WebDAV.Username); err != nil {
-			return fmt.Errorf("failed to save webdav_username config: %w", err)
-		}
-		if err := storage.SetConfig("webdav_password", c.WebDAV.Password); err != nil {
-			return fmt.Errorf("failed to save webdav_password config: %w", err)
-		}
-		if err := storage.SetConfig("webdav_configPath", c.WebDAV.ConfigPath); err != nil {
-			return fmt.Errorf("failed to save webdav_configPath config: %w", err)
-		}
-		if err := storage.SetConfig("webdav_statsPath", c.WebDAV.StatsPath); err != nil {
-			return fmt.Errorf("failed to save webdav_statsPath config: %w", err)
-		}
+		storage.SetConfig("webdav_url", c.WebDAV.URL)
+		storage.SetConfig("webdav_username", c.WebDAV.Username)
+		storage.SetConfig("webdav_password", c.WebDAV.Password)
+		storage.SetConfig("webdav_configPath", c.WebDAV.ConfigPath)
+		storage.SetConfig("webdav_statsPath", c.WebDAV.StatsPath)
 	}
 
 	// Save Backup config
 	if c.Backup != nil {
-		if err := storage.SetConfig("backup_provider", c.Backup.Provider); err != nil {
-			return fmt.Errorf("failed to save backup_provider config: %w", err)
-		}
+		storage.SetConfig("backup_provider", c.Backup.Provider)
 		if c.Backup.Local != nil {
-			if err := storage.SetConfig("backup_local_dir", c.Backup.Local.Dir); err != nil {
-				return fmt.Errorf("failed to save backup_local_dir config: %w", err)
-			}
+			storage.SetConfig("backup_local_dir", c.Backup.Local.Dir)
 		}
 		if c.Backup.S3 != nil {
-			if err := storage.SetConfig("backup_s3_endpoint", c.Backup.S3.Endpoint); err != nil {
-				return fmt.Errorf("failed to save backup_s3_endpoint config: %w", err)
-			}
-			if err := storage.SetConfig("backup_s3_region", c.Backup.S3.Region); err != nil {
-				return fmt.Errorf("failed to save backup_s3_region config: %w", err)
-			}
-			if err := storage.SetConfig("backup_s3_bucket", c.Backup.S3.Bucket); err != nil {
-				return fmt.Errorf("failed to save backup_s3_bucket config: %w", err)
-			}
-			if err := storage.SetConfig("backup_s3_prefix", c.Backup.S3.Prefix); err != nil {
-				return fmt.Errorf("failed to save backup_s3_prefix config: %w", err)
-			}
-			if err := storage.SetConfig("backup_s3_accessKey", c.Backup.S3.AccessKey); err != nil {
-				return fmt.Errorf("failed to save backup_s3_accessKey config: %w", err)
-			}
-			if err := storage.SetConfig("backup_s3_secretKey", c.Backup.S3.SecretKey); err != nil {
-				return fmt.Errorf("failed to save backup_s3_secretKey config: %w", err)
-			}
-			if err := storage.SetConfig("backup_s3_sessionToken", c.Backup.S3.SessionToken); err != nil {
-				return fmt.Errorf("failed to save backup_s3_sessionToken config: %w", err)
-			}
-			if err := storage.SetConfig("backup_s3_useSSL", strconv.FormatBool(c.Backup.S3.UseSSL)); err != nil {
-				return fmt.Errorf("failed to save backup_s3_useSSL config: %w", err)
-			}
-			if err := storage.SetConfig("backup_s3_forcePathStyle", strconv.FormatBool(c.Backup.S3.ForcePathStyle)); err != nil {
-				return fmt.Errorf("failed to save backup_s3_forcePathStyle config: %w", err)
-			}
+			storage.SetConfig("backup_s3_endpoint", c.Backup.S3.Endpoint)
+			storage.SetConfig("backup_s3_region", c.Backup.S3.Region)
+			storage.SetConfig("backup_s3_bucket", c.Backup.S3.Bucket)
+			storage.SetConfig("backup_s3_prefix", c.Backup.S3.Prefix)
+			storage.SetConfig("backup_s3_accessKey", c.Backup.S3.AccessKey)
+			storage.SetConfig("backup_s3_secretKey", c.Backup.S3.SecretKey)
+			storage.SetConfig("backup_s3_sessionToken", c.Backup.S3.SessionToken)
+			storage.SetConfig("backup_s3_useSSL", strconv.FormatBool(c.Backup.S3.UseSSL))
+			storage.SetConfig("backup_s3_forcePathStyle", strconv.FormatBool(c.Backup.S3.ForcePathStyle))
 		}
 	}
 
 	// Save Update config
 	if c.Update != nil {
-		if err := storage.SetConfig("update_autoCheck", strconv.FormatBool(c.Update.AutoCheck)); err != nil {
-			return fmt.Errorf("failed to save update_autoCheck config: %w", err)
-		}
-		if err := storage.SetConfig("update_checkInterval", strconv.Itoa(c.Update.CheckInterval)); err != nil {
-			return fmt.Errorf("failed to save update_checkInterval config: %w", err)
-		}
-		if err := storage.SetConfig("update_lastCheckTime", c.Update.LastCheckTime); err != nil {
-			return fmt.Errorf("failed to save update_lastCheckTime config: %w", err)
-		}
-		if err := storage.SetConfig("update_skippedVersion", c.Update.SkippedVersion); err != nil {
-			return fmt.Errorf("failed to save update_skippedVersion config: %w", err)
-		}
+		storage.SetConfig("update_autoCheck", strconv.FormatBool(c.Update.AutoCheck))
+		storage.SetConfig("update_checkInterval", strconv.Itoa(c.Update.CheckInterval))
+		storage.SetConfig("update_lastCheckTime", c.Update.LastCheckTime)
+		storage.SetConfig("update_skippedVersion", c.Update.SkippedVersion)
 	}
 
 	// Save Terminal config
 	if c.Terminal != nil {
-		if err := storage.SetConfig("terminal_selected", c.Terminal.SelectedTerminal); err != nil {
-			return fmt.Errorf("failed to save terminal_selected config: %w", err)
-		}
+		storage.SetConfig("terminal_selected", c.Terminal.SelectedTerminal)
 		if dirsJSON, err := json.Marshal(c.Terminal.ProjectDirs); err == nil {
-			if err := storage.SetConfig("terminal_projectDirs", string(dirsJSON)); err != nil {
-				return fmt.Errorf("failed to save terminal_projectDirs config: %w", err)
-			}
+			storage.SetConfig("terminal_projectDirs", string(dirsJSON))
 		}
-		if err := storage.SetConfig("terminal_claudeCommand", c.Terminal.ClaudeCommand); err != nil {
-			return fmt.Errorf("failed to save terminal_claudeCommand config: %w", err)
-		}
-		storage.SetConfig("terminal_claudeCommand", c.Terminal.ClaudeCommand)
 	}
 
 	// Save Proxy config
-	proxyURL := ""
 	if c.Proxy != nil {
-		proxyURL = c.Proxy.URL
-	}
-	if err := storage.SetConfig("proxy_url", proxyURL); err != nil {
-		return fmt.Errorf("failed to save proxy_url config: %w", err)
-	}
-	codexProxyURL := ""
-	if c.CodexProxy != nil {
-		codexProxyURL = c.CodexProxy.URL
-	}
-	if err := storage.SetConfig("codex_proxy_url", codexProxyURL); err != nil {
-		return fmt.Errorf("failed to save codex_proxy_url config: %w", err)
+		storage.SetConfig("proxy_url", c.Proxy.URL)
+	} else {
+		storage.SetConfig("proxy_url", "")
 	}
 
 	// Save Claude notification config
-	if err := storage.SetConfig("claude_notification_enabled", strconv.FormatBool(c.ClaudeNotificationEnabled)); err != nil {
-		return fmt.Errorf("failed to save claude_notification_enabled config: %w", err)
-	}
-	if err := storage.SetConfig("claude_notification_type", c.ClaudeNotificationType); err != nil {
-		return fmt.Errorf("failed to save claude_notification_type config: %w", err)
-	}
+	storage.SetConfig("claude_notification_enabled", strconv.FormatBool(c.ClaudeNotificationEnabled))
+	storage.SetConfig("claude_notification_type", c.ClaudeNotificationType)
 
 	return nil
 }

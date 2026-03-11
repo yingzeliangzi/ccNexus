@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
-	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
@@ -65,11 +63,6 @@ func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name stri
 
 // sendTestRequest sends a test request to an endpoint
 func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
-	apiKey, authErr := h.resolveEndpointAPIKey(endpoint)
-	if authErr != nil {
-		return "", authErr
-	}
-
 	var reqBody []byte
 	var url string
 	var err error
@@ -138,14 +131,14 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 	// Add authentication based on transformer
 	switch endpoint.Transformer {
 	case "claude":
-		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("x-api-key", endpoint.APIKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	case "openai", "openai2":
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
 	case "gemini":
 		// Gemini uses API key in URL query parameter
 		q := req.URL.Query()
-		q.Add("key", apiKey)
+		q.Add("key", endpoint.APIKey)
 		req.URL.RawQuery = q.Encode()
 	}
 
@@ -211,26 +204,6 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 	}
 
 	return string(body), nil
-}
-
-func (h *Handler) resolveEndpointAPIKey(endpoint *storage.Endpoint) (string, error) {
-	authMode := config.NormalizeAuthMode(endpoint.AuthMode)
-	if config.IsTokenPoolAuthMode(authMode) {
-		cred, err := h.storage.GetUsableEndpointCredential(endpoint.Name, time.Now().UTC())
-		if err != nil {
-			return "", fmt.Errorf("failed to get token from pool: %w", err)
-		}
-		if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
-			return "", fmt.Errorf("no usable token in token pool")
-		}
-		return strings.TrimSpace(cred.AccessToken), nil
-	}
-
-	apiKey := strings.TrimSpace(endpoint.APIKey)
-	if apiKey == "" {
-		return "", fmt.Errorf("apiKey is empty")
-	}
-	return apiKey, nil
 }
 
 // handleFetchModels fetches available models from a provider

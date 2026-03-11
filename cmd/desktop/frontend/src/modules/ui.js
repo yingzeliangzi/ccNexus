@@ -231,69 +231,6 @@ export function initUI() {
                                 </svg>
                             </button>
                         </div>
-
-                        <!-- 筛选下拉按钮组 -->
-                        <div class="filter-dropdowns">
-                            <!-- 类型筛选 -->
-                            <div class="filter-dropdown" data-filter="types">
-                                <button class="filter-dropdown-btn" title="${t('endpoints.filterTypeTooltip')}">
-                                    <span class="filter-icon">📑</span>
-                                    <span class="filter-badge hidden" id="filterBadgeTypes">0</span>
-                                    <span class="filter-arrow">▼</span>
-                                </button>
-                                <div class="filter-dropdown-panel hidden">
-                                    <div class="panel-options">
-                                        <label><input type="checkbox" value="claude"> Claude</label>
-                                        <label><input type="checkbox" value="gemini"> Gemini</label>
-                                        <label><input type="checkbox" value="openai"> OpenAI</label>
-                                        <label><input type="checkbox" value="openai2"> OpenAI2</label>
-                                    </div>
-                                    <div class="panel-footer">
-                                        <button class="btn-clear-dimension">${t('endpoints.filterClearDimension')}</button>
-                                        <button class="btn-apply">${t('endpoints.filterApply')}</button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- 可用性筛选 -->
-                            <div class="filter-dropdown" data-filter="availabilities">
-                                <button class="filter-dropdown-btn" title="${t('endpoints.filterAvailabilityTooltip')}">
-                                    <span class="filter-icon">🔌</span>
-                                    <span class="filter-badge hidden" id="filterBadgeAvailabilities">0</span>
-                                    <span class="filter-arrow">▼</span>
-                                </button>
-                                <div class="filter-dropdown-panel hidden">
-                                    <div class="panel-options">
-                                        <label><input type="checkbox" value="available"> ${t('endpoints.filterAvailable')}</label>
-                                        <label><input type="checkbox" value="unknown"> ${t('endpoints.filterUnknown')}</label>
-                                        <label><input type="checkbox" value="unavailable"> ${t('endpoints.filterUnavailable')}</label>
-                                    </div>
-                                    <div class="panel-footer">
-                                        <button class="btn-clear-dimension">${t('endpoints.filterClearDimension')}</button>
-                                        <button class="btn-apply">${t('endpoints.filterApply')}</button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- 启用状态筛选 -->
-                            <div class="filter-dropdown" data-filter="enabledStates">
-                                <button class="filter-dropdown-btn" title="${t('endpoints.filterEnabledTooltip')}">
-                                    <span class="filter-icon">⚡</span>
-                                    <span class="filter-badge hidden" id="filterBadgeEnabledStates">0</span>
-                                    <span class="filter-arrow">▼</span>
-                                </button>
-                                <div class="filter-dropdown-panel hidden">
-                                    <div class="panel-options">
-                                        <label><input type="checkbox" value="enabled"> ${t('endpoints.filterEnabled')}</label>
-                                        <label><input type="checkbox" value="disabled"> ${t('endpoints.filterDisabled')}</label>
-                                    </div>
-                                    <div class="panel-footer">
-                                        <button class="btn-clear-dimension">${t('endpoints.filterClearDimension')}</button>
-                                        <button class="btn-apply">${t('endpoints.filterApply')}</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
                     </div>
                     <div style="display: flex; gap: 10px;">
                         ${isShowBtn ? `
@@ -308,16 +245,6 @@ export function initUI() {
                         </button>
                     </div>
                 </div>
-
-
-                <!-- 筛选激活警告条 -->
-                <div id="filterActiveBanner" class="filter-active-banner hidden">
-                    ⚠️ ${t('endpoints.filterActiveWarning')}
-                    <button class="banner-btn" onclick="window.clearAllFilters()">
-                        ${t('endpoints.filterClearAll')}
-                    </button>
-                </div>
-
                 <div id="endpointPanel" class="endpoint-panel">
                     <div id="endpointList" class="endpoint-list">
                         <div class="loading">${t('endpoints.title')}...</div>
@@ -386,24 +313,10 @@ export function initUI() {
                         <input type="text" id="endpointName" placeholder="${t('modal.namePlaceholder')}">
                     </div>
                     <div class="form-group">
-                        <label><span class="required">*</span>${t('modal.authMode')}</label>
-                        <select id="endpointAuthMode" onchange="window.handleAuthModeChange()">
-                            <option value="api_key">${t('modal.authModeApiKey')}</option>
-                            <option value="token_pool">${t('modal.authModeTokenPool')}</option>
-                            <option value="codex_token_pool">${t('modal.authModeCodexTokenPool')}</option>
-                        </select>
-                        <p style="color: #666; font-size: 12px; margin-top: 5px;">
-                            ${t('modal.authModeHelp')}
-                        </p>
-                    </div>
-                    <div class="form-group">
                         <label><span class="required">*</span>${t('modal.apiUrl')}</label>
                         <input type="text" id="endpointUrl" placeholder="${t('modal.apiUrlPlaceholder')}">
-                        <p id="endpointUrlHelp" style="color: #666; font-size: 12px; margin-top: 5px;">
-                            ${t('modal.apiUrlHelp')}
-                        </p>
                     </div>
-                    <div class="form-group" id="endpointKeyGroup">
+                    <div class="form-group">
                         <label><span class="required">*</span>${t('modal.apiKey')}</label>
                         <div class="password-input-wrapper">
                             <input type="password" id="endpointKey" placeholder="${t('modal.apiKeyPlaceholder')}">
@@ -453,7 +366,6 @@ export function initUI() {
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-secondary" id="manageTokenPoolBtn" style="display: none;" onclick="window.openEndpointTokenPoolFromModal()">🪪 ${t('modal.manageTokenPool')}</button>
                     <button class="btn btn-secondary" onclick="window.closeModal()">${t('modal.cancel')}</button>
                     <button class="btn btn-primary" onclick="window.saveEndpoint()">${t('modal.save')}</button>
                 </div>
@@ -480,12 +392,6 @@ export function initUI() {
                             <option value="">Loading...</option>
                         </select>
                         <small class="form-help" id="terminalSelectHelp">${t('terminal.selectTerminalHelp')}</small>
-                    </div>
-                    <div class="form-group">
-                        <label>${t('terminal.launcherCommand')}</label>
-                        <input type="text" id="claudeCommandInput" placeholder="claude"
-                               oninput="window.onClaudeCommandChange()">
-                        <small class="form-help">${t('terminal.launcherCommandHelp')}</small>
                     </div>
                     <div class="form-group">
                         <label><span class="required">*</span>${t('terminal.projectDirs')}</label>

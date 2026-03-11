@@ -37,11 +37,10 @@ func (t *TerminalService) GetTerminalConfig() string {
 }
 
 // SaveTerminalConfig saves the terminal configuration
-func (t *TerminalService) SaveTerminalConfig(selectedTerminal string, projectDirs []string, claudeCommand string) error {
+func (t *TerminalService) SaveTerminalConfig(selectedTerminal string, projectDirs []string) error {
     terminalCfg := &config.TerminalConfig{
         SelectedTerminal: selectedTerminal,
         ProjectDirs:      projectDirs,
-        ClaudeCommand:    claudeCommand,
     }
     t.config.UpdateTerminal(terminalCfg)
 
@@ -52,7 +51,7 @@ func (t *TerminalService) SaveTerminalConfig(selectedTerminal string, projectDir
         }
     }
 
-    logger.Info("Terminal config saved: terminal=%s, dirs=%d, claudeCommand=%s", selectedTerminal, len(projectDirs), claudeCommand)
+    logger.Info("Terminal config saved: terminal=%s, dirs=%d", selectedTerminal, len(projectDirs))
     return nil
 }
 
@@ -108,10 +107,9 @@ func (t *TerminalService) LaunchTerminal(dir string) error {
     if terminalID == "" {
         terminalID = "cmd"
     }
-    customCmd := terminalCfg.ClaudeCommand
 
-    logger.Info("Launching terminal: %s in %s (cmd=%s)", terminalID, dir, customCmd)
-    return terminal.LaunchTerminalWithCustomCmd(terminalID, dir, customCmd)
+    logger.Info("Launching terminal: %s in %s", terminalID, dir)
+    return terminal.LaunchTerminal(terminalID, dir)
 }
 
 // GetSessions returns all sessions for a project directory
@@ -185,14 +183,13 @@ func (t *TerminalService) LaunchSessionTerminal(dir, sessionID string) error {
     if terminalID == "" {
         terminalID = "cmd"
     }
-    customCmd := terminalCfg.ClaudeCommand
 
     if sessionID != "" {
-        logger.Info("Launching terminal with session: %s in %s (cmd=%s)", sessionID, dir, customCmd)
+        logger.Info("Launching terminal with session: %s in %s", sessionID, dir)
     } else {
-        logger.Info("Launching new terminal in %s (cmd=%s)", dir, customCmd)
+        logger.Info("Launching new terminal in %s", dir)
     }
-    return terminal.LaunchSessionTerminalWithCustomCmd(terminalID, dir, sessionID, customCmd)
+    return terminal.LaunchTerminalWithSession(terminalID, dir, sessionID)
 }
 
 // LaunchCodexTerminal launches a terminal with Codex
